@@ -26,3 +26,10 @@
 email / openai plantform==>API key==>copy the key
 >OPENAI_API_KEY = "xxxxxxxxxxxxx"
 
+## saving code
+1. On LHS of screen, go to "source control"
+2. client to add files to the commit (i.e., stage changes)
+3. Enter a commit message (anything)
+4. click "Commit"
+5. click "sync changes"
+6. check GitHub repository to confirm
