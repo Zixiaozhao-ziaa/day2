@@ -1,24 +1,84 @@
 import streamlit as st
-from openai import OpenAI
+import chromadb
+from chromadb.utils import embedding_functions
+from pathlib import Path
+import hashlib
+import os
 from dotenv import load_dotenv
-import numpy as np
+import os
+from openai import OpenAI
 
 load_dotenv()
 
-st.title("exercise 2.4")
+os.environ["CHROMA_OPENAI_API_KEY"] = os.environ["OPENAI_API_KEY"]
 
-#set up a vector database
+CHUNKS_FOLDER = "chunks"
 
-#Exercise 2.3 - Implementing RAG Manually
+@st.cache_resource
+def get_collection():
+    client = chromadb.PersistentClient(path="./my_chroma_db")
 
-#In Exercise 2.1, you wrote some code to chunk a document into composite parts.
+    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
+        model_name="text-embedding-3-large",
+    )
 
-#In Exercise 2.2, you wrote some code to compare two blocks of text.
+    collection = client.get_or_create_collection(
+        name="knowledge_base",
+        embedding_function=openai_ef,
+    )
 
-#Combine and extend these pieces of code to create an application that does the following things:
+    # ingest once, silently — upsert means re-runs are safe
+    folder = Path(CHUNKS_FOLDER)
+    if folder.exists():
+        files = sorted(folder.glob("*.txt")) + sorted(folder.glob("*.md"))
+        documents, metadatas, ids = [], [], []
+        for file in files:
+            text = file.read_text(encoding="utf-8", errors="ignore").strip()
+            if text:
+                documents.append(text)
+                metadatas.append({"source": "Mallard v Homes Victoria [2025] 339", "filename": file.name})
+                ids.append(hashlib.md5(file.name.encode()).hexdigest())
+        if documents:
+            collection.upsert(documents=documents, metadatas=metadatas, ids=ids)
 
-#1.Allows the user to ask questions of the document from Exercise 2.1.
+    return collection
 
-#2.Retrieves the most relevant part of the document and uses this to answer the question.
+collection = get_collection()
 
-#3.Responds to the user, citing what information was used from the document.
+# --- Search UI ---
+st.title("Exercise 2.4")
+query = st.text_input("Search query")
+n_results = 15
+
+# Add chunk to prompt using prompt templating, to provide a RAG response
+client = OpenAI()
+
+if st.button("Search") and query:
+    results = collection.query(query_texts=[query], n_results=n_results)
+    for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
+        with st.container(border=True):
+            st.write(doc)
+            st.caption(f"source: {meta.get('filename')} · distance: {dist:.3f}")
+
+    # Use the retrieved chunk(s) as context for a RAG response
+    context = "\n\n---\n\n".join(results["documents"][0])
+
+    prompt = f"""You are a legal research assistant. Answer the question using only the context below.
+    If the context doesn't contain the answer, say so — do not make anything up.
+
+    Context:
+    {context}
+
+    Question: {query}
+
+    Answer:"""
+
+    with st.spinner("Generating response..."):
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+
+    st.subheader("Answer")
+    st.write(response.choices[0].message.content)
